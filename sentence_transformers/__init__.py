@@ -4,5 +4,5 @@ from .datasets import SentencesDataset, ParallelSentencesDataset
 from .LoggingHandler import LoggingHandler
 from .SentenceTransformer import SentenceTransformer
 from .readers import InputExample
-from .cross_encoder.CrossEncoder import CrossEncoder
+from .cross_encoder.BHNS_CrossEncoder import BHNS_CrossEncoder
 

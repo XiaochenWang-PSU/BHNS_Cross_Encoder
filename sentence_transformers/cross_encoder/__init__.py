@@ -1,1 +1,1 @@
-from .CrossEncoder import CrossEncoder
+from .BHNS_CrossEncoder import BHNS_CrossEncoder

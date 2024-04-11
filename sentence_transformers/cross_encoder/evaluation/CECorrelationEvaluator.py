@@ -4,7 +4,8 @@ from typing import List
 import os
 import csv
 from ... import InputExample
-
+from sklearn.metrics import ndcg_score,roc_curve, auc
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ class CECorrelationEvaluator:
         self.write_csv = write_csv
 
     @classmethod
-    def from_input_examples(cls, examples: List[InputExample], **kwargs):
+    def from_input_examples(cls, examples, **kwargs):
         sentence_pairs = []
         scores = []
 
@@ -45,11 +46,25 @@ class CECorrelationEvaluator:
         logger.info("CECorrelationEvaluator: Evaluating the model on " + self.name + " dataset" + out_txt)
         pred_scores = model.predict(self.sentence_pairs, convert_to_numpy=True, show_progress_bar=False)
 
-
+        
+        print(len(self.scores), len(pred_scores))
         eval_pearson, _ = pearsonr(self.scores, pred_scores)
         eval_spearman, _ = spearmanr(self.scores, pred_scores)
+        #print(self.scores, pred_scores)
+        #print([1 if i>=0.5 else 0 for i in self.scores], "something", pred_scores)
+        fpr, tpr, thresholds = roc_curve([1 if i>=0.5 else 0 for i in self.scores], pred_scores)
+        auc_score = auc(fpr, tpr)
+        y_scores = np.asarray([self.scores])
+        p_scores = np.asarray([pred_scores])
+        
+        ndcg_5 = ndcg_score(y_scores, p_scores, k = 5)
+        ndcg_10 = ndcg_score(y_scores, p_scores, k = 10)
+        ndcg_20 = ndcg_score(y_scores, p_scores, k = 20)
+        
+        #print(ndcg_5)
+        #print(auc_score)
 
-        logger.info("Correlation:\tPearson: {:.4f}\tSpearman: {:.4f}".format(eval_pearson, eval_spearman))
+        logger.info("Correlation:\tPearson: {:.4f}\tSpearman: {:.4f}\tndcg_5: {:.4f}\tndcg_10: {:.4f}\tndcg_20: {:.4f}\tAUC: {:.4f}\t".format(eval_pearson, eval_spearman, ndcg_5, ndcg_10, ndcg_20, auc_score))
 
         if output_path is not None and self.write_csv:
             csv_path = os.path.join(output_path, self.csv_file)

@@ -12,12 +12,12 @@ from torch.utils.data import DataLoader
 from tqdm.autonotebook import tqdm, trange
 from .. import SentenceTransformer, util
 from ..evaluation import SentenceEvaluator
-
+from FNE import Efficient_Hard_negative_generator, Efficient_Pseudo_labeler
 
 logger = logging.getLogger(__name__)
 
 
-class CrossEncoder():
+class BHNS_CrossEncoder():
     def __init__(self, model_name:str, num_labels:int = None, max_length:int = None, device:str = None, tokenizer_args:Dict = {},
                   automodel_args:Dict = {}, default_activation_function = None):
         """
@@ -35,7 +35,14 @@ class CrossEncoder():
         :param automodel_args: Arguments passed to AutoModelForSequenceClassification
         :param default_activation_function: Callable (like nn.Sigmoid) about the default activation function that should be used on-top of model.predict(). If None. nn.Sigmoid() will be used if num_labels=1, else nn.Identity()
         """
+        
+        self.hard_generator = Efficient_Hard_negative_generator()
+        self.pseudo_labeler = Efficient_Pseudo_labeler()
 
+        self.hard_generator.to("cuda:0")
+        self.pseudo_labeler.to("cuda:0")
+
+        
         self.config = AutoConfig.from_pretrained(model_name)
         classifier_trained = True
         if self.config.architectures is not None:
@@ -52,7 +59,7 @@ class CrossEncoder():
         self.max_length = max_length
 
         if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            device = "cuda:0" if torch.cuda.is_available() else "cpu"
             logger.info("Use pytorch device: {}".format(device))
 
         self._target_device = torch.device(device)
@@ -68,37 +75,26 @@ class CrossEncoder():
         else:
             self.default_activation_function = nn.Sigmoid() if self.config.num_labels == 1 else nn.Identity()
 
-    def smart_batching_collate(self, batch):
-        texts = [[] for _ in range(len(batch[0].texts))]
-        labels = []
 
+    def smart_batching_collate(self, batch):
+        num_texts = len(batch[0].texts)
+        texts = [[] for _ in range(num_texts)]
+        labels = []
         for example in batch:
             for idx, text in enumerate(example.texts):
-                texts[idx].append(text.strip())
-
+                texts[idx].append(text)
             labels.append(example.label)
-
-        tokenized = self.tokenizer(*texts, padding=True, truncation='longest_first', return_tensors="pt", max_length=self.max_length)
         labels = torch.tensor(labels, dtype=torch.float if self.config.num_labels == 1 else torch.long).to(self._target_device)
 
-        for name in tokenized:
-            tokenized[name] = tokenized[name].to(self._target_device)
 
-        return tokenized, labels
-
-    def smart_batching_collate_text_only(self, batch):
-        texts = [[] for _ in range(len(batch[0]))]
-
-        for example in batch:
-            for idx, text in enumerate(example):
-                texts[idx].append(text.strip())
-
-        tokenized = self.tokenizer(*texts, padding=True, truncation='longest_first', return_tensors="pt", max_length=self.max_length)
-
-        for name in tokenized:
-            tokenized[name] = tokenized[name].to(self._target_device)
-
-        return tokenized
+        tokenized_q = self.tokenizer(texts[0], padding=True, truncation='longest_first', return_tensors="pt", max_length=self.max_length).to(self._target_device)
+        for name in tokenized_q:
+            tokenized_q[name] = tokenized_q[name].to(self._target_device)
+        tokenized_k = self.tokenizer(texts[1], padding=True, truncation='longest_first', return_tensors="pt", max_length=self.max_length).to(self._target_device)
+        for name in tokenized_k:
+            tokenized_k[name] = tokenized_k[name].to(self._target_device)
+        return tokenized_q, tokenized_k, labels, texts
+    
 
     def fit(self,
             train_dataloader: DataLoader,
@@ -153,6 +149,7 @@ class CrossEncoder():
 
         self.model.to(self._target_device)
 
+
         if output_path is not None:
             os.makedirs(output_path, exist_ok=True)
 
@@ -175,22 +172,64 @@ class CrossEncoder():
 
         if loss_fct is None:
             loss_fct = nn.BCEWithLogitsLoss() if self.config.num_labels == 1 else nn.CrossEntropyLoss()
-
-
+            #loss_fct = FALSECriterion()
+        
+        
         skip_scheduler = False
+        
+        neg_chunk_size = 2
+        tau = 0.5
         for epoch in trange(epochs, desc="Epoch", disable=not show_progress_bar):
             training_steps = 0
             self.model.zero_grad()
             self.model.train()
 
-            for features, labels in tqdm(train_dataloader, desc="Iteration", smoothing=0.05, disable=not show_progress_bar):
+            for q, k, labels, texts in tqdm(train_dataloader, desc="Iteration", smoothing=0.05, disable=not show_progress_bar):
+
+                text0 = []
+                text1 = []
+                hard_selection = self.hard_generator(q, k, labels, neg_chunk_size, tau)
+                #hard_selection = torch.topk(theta, k=neg_chunk_size, dim=1).indices
+                hard_selection = hard_selection.cpu().detach().numpy().astype(int)
+
+                for i in range(len(hard_selection)):
+                    for g in hard_selection[i]:
+                            text0.append(texts[0][i])
+                            text1.append(texts[1][g])
+
+                hard_selection = torch.from_numpy(hard_selection)
+                hard_selection.to(self._target_device)
+                
+                
+                                    
+                
+#                # obtained pseudo label for selected hard negatives
+
+                pseudo_labels = self.pseudo_labeler(q, labels, hard_selection, neg_chunk_size)
+                
+               
+                augmented_labels = torch.concat((labels,pseudo_labels), 0)
+                
+                
+                
+                batch_size = len(labels)
+                texts[0] += text0
+                texts[1] += text1
+
+
+                tokenized = self.tokenizer(*texts, padding=True, truncation='longest_first', return_tensors="pt", max_length=self.max_length).to(self._target_device)
+                
+
+                
+                
                 if use_amp:
                     with autocast():
-                        model_predictions = self.model(**features, return_dict=True)
+                        model_predictions = self.model(**tokenized, return_dict=True)
                         logits = activation_fct(model_predictions.logits)
                         if self.config.num_labels == 1:
                             logits = logits.view(-1)
-                        loss_value = loss_fct(logits, labels)
+                        loss_value = loss_fct(logits, augmented_labels)
+                        
 
                     scale_before_step = scaler.get_scale()
                     scaler.scale(loss_value).backward()
@@ -201,11 +240,11 @@ class CrossEncoder():
 
                     skip_scheduler = scaler.get_scale() != scale_before_step
                 else:
-                    model_predictions = self.model(**features, return_dict=True)
+                    model_predictions = self.model(**tokenized, return_dict=True)
                     logits = activation_fct(model_predictions.logits)
                     if self.config.num_labels == 1:
                         logits = logits.view(-1)
-                    loss_value = loss_fct(logits, labels)
+                    loss_value = loss_fct(logits, augmented_labels)
                     loss_value.backward()
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
                     optimizer.step()

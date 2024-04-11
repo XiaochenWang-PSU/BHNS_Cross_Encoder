@@ -3,3 +3,4 @@ from .CEBinaryClassificationEvaluator import CEBinaryClassificationEvaluator
 from .CECorrelationEvaluator import CECorrelationEvaluator
 from .CESoftmaxAccuracyEvaluator import CESoftmaxAccuracyEvaluator
 from .CERerankingEvaluator import CERerankingEvaluator
+from .CrossEncoderNDCGEvaluator import CrossEncoderNDCGEvaluator
