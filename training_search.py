@@ -24,15 +24,8 @@ import torch
 import random
 import numpy as np
 
-from sentence_transformers import SentenceTransformer
 
 
-sent_trans = SentenceTransformer('all-MiniLM-L6-v2')
-
-
-np.random.seed(48)
-random.seed(48)
-torch.manual_seed(48)
 
 #### Just some code to print debug information to stdout
 logging.basicConfig(format='%(asctime)s - %(message)s',

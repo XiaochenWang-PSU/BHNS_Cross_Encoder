@@ -7,12 +7,7 @@ from torch.nn.functional import softmax, binary_cross_entropy_with_logits, cross
 from torch.nn import CosineSimilarity
 import numpy as np
 from sentence_transformers import SentenceTransformer
-from classy_vision.generic.distributed_util import get_cuda_device_index, get_rank
-from classy_vision.losses import ClassyLoss, register_loss
 from torch import nn
-from vissl.config import AttrDict
-from vissl.utils.distributed_utils import gather_from_all
-
     
 
 class Theta_Estimation(nn.Module):
@@ -57,7 +52,7 @@ class Efficient_Hard_negative_generator(nn.Module):
 #         define sentence transformer
         
         self.st = SentenceTransformer('sentence-transformers/paraphrase-MiniLM-L3-v2')
-
+        
         
         
     def forward(self, q, k, label, num_neg, tau):

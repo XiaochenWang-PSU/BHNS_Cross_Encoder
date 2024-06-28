@@ -38,6 +38,7 @@ class BHNS_CrossEncoder():
         
         self.hard_generator = Efficient_Hard_negative_generator()
         self.pseudo_labeler = Efficient_Pseudo_labeler()
+        self.st_tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/paraphrase-MiniLM-L3-v2')
 
         self.hard_generator.to("cuda:0")
         self.pseudo_labeler.to("cuda:0")
@@ -75,6 +76,19 @@ class BHNS_CrossEncoder():
         else:
             self.default_activation_function = nn.Sigmoid() if self.config.num_labels == 1 else nn.Identity()
 
+    def smart_batching_collate_text_only(self, batch):
+        texts = [[] for _ in range(len(batch[0]))]
+
+        for example in batch:
+            for idx, text in enumerate(example):
+                texts[idx].append(text.strip())
+
+        tokenized = self.tokenizer(*texts, padding=True, truncation='longest_first', return_tensors="pt", max_length=self.max_length)
+        
+        for name in tokenized:
+            tokenized[name] = tokenized[name].to(self._target_device)
+
+        return tokenized
 
     def smart_batching_collate(self, batch):
         num_texts = len(batch[0].texts)
@@ -87,10 +101,10 @@ class BHNS_CrossEncoder():
         labels = torch.tensor(labels, dtype=torch.float if self.config.num_labels == 1 else torch.long).to(self._target_device)
 
 
-        tokenized_q = self.tokenizer(texts[0], padding=True, truncation='longest_first', return_tensors="pt", max_length=self.max_length).to(self._target_device)
+        tokenized_q = self.st_tokenizer(texts[0], padding=True, truncation='longest_first', return_tensors="pt", max_length=self.max_length).to(self._target_device)
         for name in tokenized_q:
             tokenized_q[name] = tokenized_q[name].to(self._target_device)
-        tokenized_k = self.tokenizer(texts[1], padding=True, truncation='longest_first', return_tensors="pt", max_length=self.max_length).to(self._target_device)
+        tokenized_k = self.st_tokenizer(texts[1], padding=True, truncation='longest_first', return_tensors="pt", max_length=self.max_length).to(self._target_device)
         for name in tokenized_k:
             tokenized_k[name] = tokenized_k[name].to(self._target_device)
         return tokenized_q, tokenized_k, labels, texts
@@ -172,12 +186,11 @@ class BHNS_CrossEncoder():
 
         if loss_fct is None:
             loss_fct = nn.BCEWithLogitsLoss() if self.config.num_labels == 1 else nn.CrossEntropyLoss()
-            #loss_fct = FALSECriterion()
         
         
         skip_scheduler = False
         
-        neg_chunk_size = 2
+        neg_chunk_size = 8
         tau = 0.5
         for epoch in trange(epochs, desc="Epoch", disable=not show_progress_bar):
             training_steps = 0
@@ -189,7 +202,6 @@ class BHNS_CrossEncoder():
                 text0 = []
                 text1 = []
                 hard_selection = self.hard_generator(q, k, labels, neg_chunk_size, tau)
-                #hard_selection = torch.topk(theta, k=neg_chunk_size, dim=1).indices
                 hard_selection = hard_selection.cpu().detach().numpy().astype(int)
 
                 for i in range(len(hard_selection)):
